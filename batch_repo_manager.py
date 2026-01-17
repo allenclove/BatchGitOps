@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-批量代码仓库管理工具
+BatchGitOps - 批量Git仓库操作工具
 支持批量拉取代码、创建分支、修改代码、执行命令、提交推送
 """
 
@@ -43,7 +43,7 @@ class LogManager:
 
         # 生成日志文件名（带时间戳）
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        log_file = self.log_dir / f"batch_repo_{timestamp}.log"
+        log_file = self.log_dir / f"batchgitops_{timestamp}.log"
 
         # 配置根日志记录器
         logging.basicConfig(
@@ -904,7 +904,7 @@ def main():
     config_path = sys.argv[1] if len(sys.argv) > 1 else 'config.json'
 
     print("=" * 60)
-    print("批量代码仓库管理工具")
+    print("BatchGitOps - 批量Git仓库操作工具")
     print("=" * 60)
     print(f"配置文件: {config_path}")
     print()

@@ -1,6 +1,6 @@
-# 批量代码仓库管理工具
+# BatchGitOps
 
-一个Python命令行工具，用于批量管理多个Git代码仓库，支持批量拉取代码、创建分支、修改代码、执行命令和提交推送。
+批量Git仓库操作工具 - 一个Python命令行工具，用于批量管理多个Git代码仓库，支持批量拉取代码、创建分支、修改代码、执行命令和提交推送。
 
 ## 功能特性
 
@@ -16,7 +16,7 @@
 ### 1. 克隆或下载本项目
 
 ```bash
-cd test_auto_change_commit
+cd batch-gitops
 ```
 
 ### 2. 安装依赖
@@ -273,3 +273,5 @@ python batch_repo_manager.py /path/to/custom-config.json
 ## 许可证
 
 MIT License
+
+Copyright (c) 2025 BatchGitOps
