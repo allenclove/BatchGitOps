@@ -1,0 +1,43 @@
+{
+  "global": {
+    "on_error": "continue",
+    "log_dir": "./logs",
+    "log_level": "INFO",
+    "git_token": "${GIT_TOKEN}",
+    "source_branch": "main"
+  },
+  "repositories": [
+    {
+      "name": "lottery-project",
+      "url": "https://github.com/allenclove/lottery-project.git"
+    },
+    {
+      "name": "cookie-sniffer",
+      "url": "https://github.com/allenclove/cookie-sniffer.git"
+    }
+  ],
+  "personal_branch": "rel-chenyuchao",
+  "replacements": [
+    {
+      "search": "body",
+      "replace": "body1",
+      "is_regex": false,
+      "include_extensions": [],
+      "exclude_patterns": ["*_test.py", "node_modules/*"]
+    },
+    {
+      "search": "button",
+      "replace": "button1",
+      "is_regex": false,
+      "include_extensions": [],
+      "exclude_patterns": ["*_test.py", "node_modules/*"]
+    }
+  ],
+  "commands": [],
+  "commit": {
+    "message": "Batch update: {task_id}\n\n- Applied {replacement_count} replacement rules\n- Executed {command_count} build commands\n- Automated commit on {date}\n\nCo-Authored-By: Batch Tool <noreply@tool.com>",
+    "variables": {
+      "task_id": "TASK-1234"
+    }
+  }
+}
