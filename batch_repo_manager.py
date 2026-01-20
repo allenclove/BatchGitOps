@@ -9,12 +9,48 @@ import os
 import re
 import subprocess
 import fnmatch
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 
 import json
 from dotenv import load_dotenv
+
+
+# ============================================================================
+# 彩色日志处理器
+# ============================================================================
+
+class ColorFormatter(logging.Formatter):
+    """带颜色输出的日志格式化器（仅用于控制台）"""
+
+    # ANSI颜色代码
+    COLORS = {
+        'DEBUG': '\033[36m',      # 青色
+        'INFO': '\033[32m',       # 绿色
+        'WARNING': '\033[33m',    # 黄色
+        'ERROR': '\033[31m',      # 红色
+        'CRITICAL': '\033[35m',   # 紫色
+    }
+    RESET = '\033[0m'
+
+    def __init__(self, fmt=None, datefmt=None, use_colors=True):
+        """初始化彩色格式化器"""
+        super().__init__(fmt, datefmt)
+        self.use_colors = use_colors
+
+    def format(self, record):
+        """格式化日志记录"""
+        if self.use_colors:
+            # 获取日志级别对应的颜色
+            color = self.COLORS.get(record.levelname, '')
+            if color:
+                # 添加颜色到级别名称
+                record.levelname = f"{color}{record.levelname}{self.RESET}"
+                # 也可以为整行添加颜色
+                record.msg = f"{color}{record.msg}{self.RESET}"
+        return super().format(record)
 
 
 # ============================================================================
@@ -45,15 +81,31 @@ class LogManager:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         log_file = self.log_dir / f"batchgitops_{timestamp}.log"
 
-        # 配置根日志记录器
-        logging.basicConfig(
-            level=self.log_level,
-            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.FileHandler(log_file, encoding='utf-8'),
-                logging.StreamHandler()
-            ]
+        # 创建根日志记录器
+        root_logger = logging.getLogger()
+        root_logger.setLevel(self.log_level)
+
+        # 清除现有的处理器
+        root_logger.handlers.clear()
+
+        # 文件处理器（不带颜色）
+        file_formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
         )
+        file_handler = logging.FileHandler(log_file, encoding='utf-8')
+        file_handler.setFormatter(file_formatter)
+        root_logger.addHandler(file_handler)
+
+        # 控制台处理器（带颜色）
+        console_handler = logging.StreamHandler()
+        # 检测是否支持颜色
+        use_colors = hasattr(sys.stdout, 'isatty') and sys.stdout.isatty()
+        console_formatter = ColorFormatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            use_colors=use_colors
+        )
+        console_handler.setFormatter(console_formatter)
+        root_logger.addHandler(console_handler)
 
     def get_logger(self, name: str) -> logging.Logger:
         """
@@ -166,14 +218,20 @@ class ConfigLoader:
 class GitOperations:
     """Git操作封装类，处理所有Git相关操作"""
 
-    def __init__(self, git_token: Optional[str] = None):
+    def __init__(self, git_token: Optional[str] = None,
+                 branch_exists_strategy: str = "checkout"):
         """
         初始化Git操作器
 
         Args:
             git_token: HTTPS访问的Git token（可选）
+            branch_exists_strategy: 分支已存在时的处理策略
+                - "checkout": 直接检出远程已存在的分支
+                - "recreate": 删除本地分支并重新创建
+                - "reset": 检出分支并重置到源分支
         """
         self.git_token = git_token
+        self.branch_exists_strategy = branch_exists_strategy
         self.logger = logging.getLogger(self.__class__.__name__)
 
     def clone_or_pull(self, repo_url: str, target_dir: Path, source_branch: str) -> bool:
@@ -212,6 +270,8 @@ class GitOperations:
                 ['git', 'clone', url_with_auth, str(target_dir)],
                 capture_output=True,
                 text=True,
+                encoding='utf-8',
+                errors='replace',
                 check=True
             )
 
@@ -233,6 +293,8 @@ class GitOperations:
                 cwd=repo_dir,
                 capture_output=True,
                 text=True,
+                encoding='utf-8',
+                errors='replace',
                 check=True
             )
 
@@ -246,6 +308,8 @@ class GitOperations:
                 cwd=repo_dir,
                 capture_output=True,
                 text=True,
+                encoding='utf-8',
+                errors='replace',
                 check=True
             )
 
@@ -262,6 +326,8 @@ class GitOperations:
                 cwd=repo_dir,
                 capture_output=True,
                 text=True,
+                encoding='utf-8',
+                errors='replace',
                 check=True
             )
         except subprocess.CalledProcessError:
@@ -271,6 +337,8 @@ class GitOperations:
                 cwd=repo_dir,
                 capture_output=True,
                 text=True,
+                encoding='utf-8',
+                errors='replace',
                 check=True
             )
 
@@ -297,8 +365,57 @@ class GitOperations:
                 cwd=repo_dir,
                 capture_output=True,
                 text=True,
+                encoding='utf-8',
+                errors='replace',
                 check=True
             )
+
+            # 检查本地分支是否已存在
+            if self._local_branch_exists(repo_dir, personal_branch):
+                self.logger.info(f"本地分支 '{personal_branch}' 已存在")
+                return self._handle_existing_branch(repo_dir, source_branch, personal_branch)
+
+            # 检查远程分支是否存在
+            remote_exists = self._remote_branch_exists(repo_dir, personal_branch)
+            if remote_exists:
+                self.logger.info(f"远程分支 '{personal_branch}' 已存在")
+                if self.branch_exists_strategy == "checkout":
+                    # 直接检出远程分支
+                    subprocess.run(
+                        ['git', 'checkout', '-b', personal_branch,
+                         f'origin/{personal_branch}'],
+                        cwd=repo_dir,
+                        capture_output=True,
+                        text=True,
+                        encoding='utf-8',
+                        errors='replace',
+                        check=True
+                    )
+                    self.logger.info(f"检出远程分支: {personal_branch}")
+                    return True
+                elif self.branch_exists_strategy == "reset":
+                    # 检出远程分支并重置到源分支
+                    subprocess.run(
+                        ['git', 'checkout', '-b', personal_branch,
+                         f'origin/{personal_branch}'],
+                        cwd=repo_dir,
+                        capture_output=True,
+                        text=True,
+                        encoding='utf-8',
+                        errors='replace',
+                        check=True
+                    )
+                    subprocess.run(
+                        ['git', 'reset', '--hard', f'origin/{source_branch}'],
+                        cwd=repo_dir,
+                        capture_output=True,
+                        text=True,
+                        encoding='utf-8',
+                        errors='replace',
+                        check=True
+                    )
+                    self.logger.info(f"检出远程分支并重置: {personal_branch}")
+                    return True
 
             # 创建并切换到个人分支
             subprocess.run(
@@ -306,6 +423,8 @@ class GitOperations:
                 cwd=repo_dir,
                 capture_output=True,
                 text=True,
+                encoding='utf-8',
+                errors='replace',
                 check=True
             )
 
@@ -314,6 +433,125 @@ class GitOperations:
         except subprocess.CalledProcessError as e:
             self.logger.error(f"创建分支失败: {e.stderr}")
             return False
+
+    def _local_branch_exists(self, repo_dir: Path, branch_name: str) -> bool:
+        """检查本地分支是否存在"""
+        try:
+            result = subprocess.run(
+                ['git', 'branch', '--list', branch_name],
+                cwd=repo_dir,
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                check=True
+            )
+            return bool(result.stdout.strip())
+        except subprocess.CalledProcessError:
+            return False
+
+    def _remote_branch_exists(self, repo_dir: Path, branch_name: str) -> bool:
+        """检查远程分支是否存在"""
+        try:
+            result = subprocess.run(
+                ['git', 'ls-remote', '--heads', 'origin', branch_name],
+                cwd=repo_dir,
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                check=True
+            )
+            return bool(result.stdout.strip())
+        except subprocess.CalledProcessError:
+            return False
+
+    def _handle_existing_branch(self, repo_dir: Path, source_branch: str,
+                                personal_branch: str) -> bool:
+        """
+        处理已存在的本地分支
+
+        Args:
+            repo_dir: 仓库目录
+            source_branch: 源分支名称
+            personal_branch: 个人分支名称
+
+        Returns:
+            操作是否成功
+        """
+        strategy = self.branch_exists_strategy
+
+        if strategy == "checkout":
+            # 直接切换到已存在的分支
+            subprocess.run(
+                ['git', 'checkout', personal_branch],
+                cwd=repo_dir,
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                check=True
+            )
+            self.logger.info(f"切换到已存在的分支: {personal_branch}")
+            return True
+
+        elif strategy == "recreate":
+            # 删除本地分支并重新创建
+            # 先切换到源分支
+            subprocess.run(
+                ['git', 'checkout', source_branch],
+                cwd=repo_dir,
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                check=True
+            )
+            # 删除本地分支
+            subprocess.run(
+                ['git', 'branch', '-D', personal_branch],
+                cwd=repo_dir,
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                check=True
+            )
+            # 重新创建分支
+            subprocess.run(
+                ['git', 'checkout', '-b', personal_branch],
+                cwd=repo_dir,
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                check=True
+            )
+            self.logger.info(f"重新创建分支: {personal_branch}")
+            return True
+
+        elif strategy == "reset":
+            # 切换到分支并重置到源分支
+            subprocess.run(
+                ['git', 'checkout', personal_branch],
+                cwd=repo_dir,
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                check=True
+            )
+            subprocess.run(
+                ['git', 'reset', '--hard', f'origin/{source_branch}'],
+                cwd=repo_dir,
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            self.logger.info(f"重置分支 {personal_branch} 到 {source_branch}")
+            return True
+
+        return False
 
     def has_changes(self, repo_dir: Path) -> bool:
         """
@@ -331,6 +569,8 @@ class GitOperations:
                 cwd=repo_dir,
                 capture_output=True,
                 text=True,
+                encoding='utf-8',
+                errors='replace',
                 check=True
             )
             return len(result.stdout.strip()) > 0
@@ -362,6 +602,8 @@ class GitOperations:
                 cwd=repo_dir,
                 capture_output=True,
                 text=True,
+                encoding='utf-8',
+                errors='replace',
                 check=True
             )
 
@@ -371,6 +613,8 @@ class GitOperations:
                 cwd=repo_dir,
                 capture_output=True,
                 text=True,
+                encoding='utf-8',
+                errors='replace',
                 check=True
             )
 
@@ -386,6 +630,8 @@ class GitOperations:
                 cwd=repo_dir,
                 capture_output=True,
                 text=True,
+                encoding='utf-8',
+                errors='replace',
                 check=True
             )
 
@@ -428,6 +674,8 @@ class GitOperations:
                 cwd=repo_dir,
                 capture_output=True,
                 text=True,
+                encoding='utf-8',
+                errors='replace',
                 check=True
             )
             current_url = result.stdout.strip()
@@ -440,6 +688,8 @@ class GitOperations:
                     cwd=repo_dir,
                     capture_output=True,
                     text=True,
+                    encoding='utf-8',
+                    errors='replace',
                     check=True
                 )
                 return new_url
@@ -458,22 +708,26 @@ class CodeModifier:
     def __init__(self):
         """初始化代码修改器"""
         self.logger = logging.getLogger(self.__class__.__name__)
+        # 统计信息
+        self.rule_stats = {}  # {rule_index: {'repos': set(), 'files': []}}
 
     def apply_replacements(self, repo_dir: Path,
-                           replacements: List[Dict[str, Any]]) -> int:
+                           replacements: List[Dict[str, Any]],
+                           repo_name: str = "") -> int:
         """
         应用所有替换规则到仓库
 
         Args:
             repo_dir: 仓库目录
             replacements: 替换规则列表
+            repo_name: 仓库名称（用于统计）
 
         Returns:
             修改的文件总数
         """
         modified_count = 0
 
-        for rule in replacements:
+        for idx, rule in enumerate(replacements):
             search = rule.get('search')
             replace = rule.get('replace')
             is_regex = rule.get('is_regex', False)
@@ -483,19 +737,59 @@ class CodeModifier:
             if not search:
                 continue
 
-            self.logger.info(f"应用替换规则: {'(正则)' if is_regex else ''} {search[:50]}...")
+            # 初始化规则统计
+            if idx not in self.rule_stats:
+                self.rule_stats[idx] = {'repos': set(), 'files': []}
+
+            self.logger.info(f"应用替换规则 #{idx + 1}: {'(正则)' if is_regex else ''} {search[:50]}...")
 
             # 遍历所有文件
-            for file_path in self._get_files_to_process(
-                repo_dir, include_exts, exclude_patterns
-            ):
+            files_to_process = self._get_files_to_process(repo_dir, include_exts, exclude_patterns)
+            file_modified_count = 0
+
+            for file_path in files_to_process:
                 if self._apply_single_replacement(
                     file_path, search, replace, is_regex
                 ):
                     modified_count += 1
+                    file_modified_count += 1
+                    self.rule_stats[idx]['files'].append(str(file_path))
 
-        self.logger.info(f"共修改 {modified_count} 个文件")
+            # 记录该仓库被此规则处理过（即使没有修改文件）
+            self.rule_stats[idx]['repos'].add(repo_name)
+
+            if file_modified_count > 0:
+                self.logger.info(f"  -> 规则 #{idx + 1} 在 [{repo_name}] 中修改了 {file_modified_count} 个文件")
+            else:
+                self.logger.info(f"  -> 规则 #{idx + 1} 在 [{repo_name}] 中未匹配到任何内容")
+
+        if modified_count > 0:
+            self.logger.info(f"仓库 [{repo_name}] 共修改 {modified_count} 个文件")
         return modified_count
+
+    def print_summary(self, repo_count: int):
+        """
+        打印所有替换规则的统计摘要
+
+        Args:
+            repo_count: 处理的仓库总数
+        """
+        if not self.rule_stats:
+            self.logger.info("未执行任何替换规则")
+            return
+
+        self.logger.info("=" * 60)
+        self.logger.info("替换规则执行统计汇总")
+        self.logger.info("=" * 60)
+
+        for idx, stats in self.rule_stats.items():
+            affected_repos = len(stats['repos'])
+            affected_files = len(stats['files'])
+            self.logger.info(f"规则 #{idx + 1}:")
+            self.logger.info(f"  - 涉及代码仓: {affected_repos}/{repo_count}")
+            self.logger.info(f"  - 修改文件数: {affected_files}")
+
+        self.logger.info("=" * 60)
 
     def _get_files_to_process(self, repo_dir: Path,
                                include_exts: List[str],
@@ -627,24 +921,33 @@ class CodeModifier:
 class CommandExecutor:
     """命令执行器，在仓库目录中执行自定义命令"""
 
-    def __init__(self, on_error: str = "continue"):
+    def __init__(self, on_error: str = "continue", show_output: bool = True,
+                 command_scope: str = "repo"):
         """
         初始化命令执行器
 
         Args:
             on_error: 错误处理策略 ("continue" | "stop")
+            show_output: 是否显示命令输出内容
+            command_scope: 命令执行范围
+                - "repo": 在每个仓库根目录执行
+                - "parent": 在所有仓库的父目录执行一次
         """
         self.on_error = on_error
+        self.show_output = show_output
+        self.command_scope = command_scope
         self.logger = logging.getLogger(self.__class__.__name__)
 
     def execute_in_repo(self, repo_dir: Path,
-                        commands: List[str]) -> Tuple[int, int]:
+                        commands: List[str],
+                        parent_dir: Optional[Path] = None) -> Tuple[int, int]:
         """
-        在仓库根目录执行命令列表
+        执行命令列表
 
         Args:
             repo_dir: 仓库目录
             commands: 命令列表
+            parent_dir: 父目录（当 command_scope="parent" 时使用）
 
         Returns:
             (成功数量, 失败数量)
@@ -652,8 +955,16 @@ class CommandExecutor:
         success_count = 0
         fail_count = 0
 
+        # 根据配置选择执行目录
+        if self.command_scope == "parent" and parent_dir is not None:
+            exec_dir = parent_dir
+            self.logger.info(f"在父目录执行命令: {exec_dir}")
+        else:
+            exec_dir = repo_dir
+            self.logger.info(f"在仓库目录执行命令: {exec_dir}")
+
         for cmd in commands:
-            result = self.execute_single_command(repo_dir, cmd)
+            result = self.execute_single_command(exec_dir, cmd)
             if result:
                 success_count += 1
             else:
@@ -664,12 +975,12 @@ class CommandExecutor:
 
         return success_count, fail_count
 
-    def execute_single_command(self, repo_dir: Path, command: str) -> bool:
+    def execute_single_command(self, exec_dir: Path, command: str) -> bool:
         """
         执行单个命令并返回结果
 
         Args:
-            repo_dir: 仓库目录
+            exec_dir: 执行命令的目录
             command: 要执行的命令
 
         Returns:
@@ -681,22 +992,34 @@ class CommandExecutor:
             result = subprocess.run(
                 command,
                 shell=True,
-                cwd=repo_dir,
+                cwd=exec_dir,
                 capture_output=True,
                 text=True,
+                encoding='utf-8',
+                errors='replace',  # 替换无法解码的字符
                 timeout=300  # 5分钟超时
             )
 
-            if result.stdout:
-                self.logger.debug(f"命令输出:\n{result.stdout}")
-            if result.stderr:
-                self.logger.warning(f"错误输出:\n{result.stderr}")
+            # 显示命令输出
+            if self.show_output:
+                if result.stdout:
+                    # 使用 INFO 级别显示标准输出，确保用户能看到
+                    output_lines = result.stdout.strip().split('\n')
+                    self.logger.info(f"命令输出 ({len(output_lines)} 行):")
+                    for line in output_lines:
+                        self.logger.info(f"  {line}")
+                if result.stderr:
+                    # 错误输出使用 WARNING 级别
+                    error_lines = result.stderr.strip().split('\n')
+                    self.logger.warning(f"错误输出 ({len(error_lines)} 行):")
+                    for line in error_lines:
+                        self.logger.warning(f"  {line}")
 
             if result.returncode == 0:
-                self.logger.info(f"命令执行成功: {command}")
+                self.logger.info(f"命令执行成功 (退出码: 0)")
                 return True
             else:
-                self.logger.error(f"命令执行失败 (退出码: {result.returncode}): {command}")
+                self.logger.error(f"命令执行失败 (退出码: {result.returncode})")
                 return False
         except subprocess.TimeoutExpired:
             self.logger.error(f"命令执行超时: {command}")
@@ -759,6 +1082,10 @@ class BatchRepoManager:
             self.logger.info(f"批量处理完成: 成功 {success_count}, 失败 {fail_count}")
             self.logger.info("=" * 60)
 
+            # 5. 输出替换规则统计
+            total_repos = len(self.config['repositories'])
+            self.code_modifier.print_summary(total_repos)
+
         except Exception as e:
             self.logger.error(f"程序执行失败: {e}", exc_info=True)
             raise
@@ -785,17 +1112,47 @@ class BatchRepoManager:
 
         # 初始化Git操作器
         git_token = global_config.get('git_token')
-        self.git_ops = GitOperations(git_token)
+        branch_exists_strategy = global_config.get('branch_exists_strategy', 'checkout')
+        self.git_ops = GitOperations(git_token, branch_exists_strategy)
 
         # 初始化代码修改器
         self.code_modifier = CodeModifier()
 
         # 初始化命令执行器
         on_error = global_config.get('on_error', 'continue')
-        self.command_executor = CommandExecutor(on_error)
+        show_command_output = global_config.get('show_command_output', True)
+        command_scope = global_config.get('command_scope', 'repo')
+        self.command_executor = CommandExecutor(on_error, show_command_output, command_scope)
+
+        # 初始化执行步骤配置
+        self._init_execution_steps()
 
         # 创建工作目录
         self.work_dir.mkdir(parents=True, exist_ok=True)
+
+    def _init_execution_steps(self):
+        """初始化执行步骤配置"""
+        global_config = self.config.get('global', {})
+        # 默认所有步骤都执行
+        self.execution_steps = {
+            'clone': global_config.get('execute_clone', True),
+            'branch': global_config.get('execute_branch', True),
+            'replacements': global_config.get('execute_replacements', True),
+            'commands': global_config.get('execute_commands', True),
+            'commit': global_config.get('execute_commit', True),
+        }
+
+    def _should_execute(self, step: str) -> bool:
+        """
+        判断某个步骤是否应该执行
+
+        Args:
+            step: 步骤名称
+
+        Returns:
+            是否应该执行
+        """
+        return self.execution_steps.get(step, True)
 
     def process_repository(self, repo_config: Dict[str, Any]) -> bool:
         """
@@ -818,40 +1175,57 @@ class BatchRepoManager:
         try:
             # 1. 克隆或拉取代码
             repo_dir = self.work_dir / name
-            if not self.git_ops.clone_or_pull(url, repo_dir, source_branch):
-                self.logger.error(f"克隆/拉取失败: {name}")
-                return False
+            if self._should_execute('clone'):
+                if not self.git_ops.clone_or_pull(url, repo_dir, source_branch):
+                    self.logger.error(f"克隆/拉取失败: {name}")
+                    return False
+            else:
+                self.logger.info(f"跳过克隆/拉取步骤: {name}")
+                if not repo_dir.exists():
+                    self.logger.error(f"仓库目录不存在且跳过克隆: {name}")
+                    return False
 
             # 2. 创建个人分支
             personal_branch = self.config.get('personal_branch', 'feature/batch-update')
-            if not self.git_ops.create_personal_branch(
-                repo_dir, source_branch, personal_branch
-            ):
-                self.logger.error(f"创建分支失败: {name}")
-                return False
+            if self._should_execute('branch'):
+                if not self.git_ops.create_personal_branch(
+                    repo_dir, source_branch, personal_branch
+                ):
+                    self.logger.error(f"创建分支失败: {name}")
+                    return False
+            else:
+                self.logger.info(f"跳过创建分支步骤: {name}")
 
             # 3. 批量修改代码
             replacements = self.config.get('replacements', [])
-            if replacements:
+            if replacements and self._should_execute('replacements'):
                 self.logger.info(f"应用 {len(replacements)} 条替换规则...")
-                self.code_modifier.apply_replacements(repo_dir, replacements)
+                self.code_modifier.apply_replacements(repo_dir, replacements, name)
+            elif replacements:
+                self.logger.info(f"跳过代码替换步骤")
 
             # 4. 执行自定义命令
             commands = self.config.get('commands', [])
-            if commands:
+            if commands and self._should_execute('commands'):
                 self.logger.info(f"执行 {len(commands)} 条命令...")
-                self.command_executor.execute_in_repo(repo_dir, commands)
+                # 传递父目录参数，支持在父目录执行命令
+                self.command_executor.execute_in_repo(repo_dir, commands, self.work_dir)
+            elif commands:
+                self.logger.info(f"跳过命令执行步骤")
 
             # 5. 提交并推送
-            commit_message = self.format_commit_message(
-                self.config['commit']['message'],
-                name
-            )
-            if not self.git_ops.commit_and_push(
-                repo_dir, personal_branch, commit_message
-            ):
-                self.logger.warning(f"提交/推送失败: {name}")
-                # 不返回False，因为前面的操作已经成功
+            if self._should_execute('commit'):
+                commit_message = self.format_commit_message(
+                    self.config['commit']['message'],
+                    name
+                )
+                if not self.git_ops.commit_and_push(
+                    repo_dir, personal_branch, commit_message
+                ):
+                    self.logger.warning(f"提交/推送失败: {name}")
+                    # 不返回False，因为前面的操作已经成功
+            else:
+                self.logger.info(f"跳过提交/推送步骤")
 
             self.logger.info(f"仓库处理完成: {name}")
             return True
