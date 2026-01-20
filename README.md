@@ -39,6 +39,13 @@ pip install python-dotenv
     "git_token": "${GIT_TOKEN}",
     "source_branch": "main"
   },
+  "execution": {
+    "clone": true,
+    "branch": true,
+    "replacements": true,
+    "commands": true,
+    "commit": true
+  },
   "repositories": [
     {
       "name": "my-project",
@@ -76,12 +83,6 @@ python batch_repo_manager.py
 | `source_branch` | string | "main" | 源分支名称，用于克隆和创建个人分支 |
 | `branch_exists_strategy` | string | "checkout" | 个人分支已存在时的处理策略：<br>- `"checkout"`: 直接检出远程已存在的分支<br>- `"recreate"`: 删除本地分支并重新创建<br>- `"reset"`: 检出分支并重置到源分支 |
 | `show_command_output` | boolean | true | 是否显示命令执行的输出内容 |
-| `command_scope` | string | "repo" | 命令执行位置：<br>- `"repo"`: 在每个仓库根目录执行<br>- `"parent"`: 在所有仓库的父目录执行一次 |
-| `execute_clone` | boolean | true | 是否执行克隆/拉取步骤 |
-| `execute_branch` | boolean | true | 是否执行分支创建步骤 |
-| `execute_replacements` | boolean | true | 是否执行代码替换步骤 |
-| `execute_commands` | boolean | true | 是否执行自定义命令步骤 |
-| `execute_commit` | boolean | true | 是否执行提交/推送步骤 |
 
 **配置示例**:
 
@@ -94,16 +95,40 @@ python batch_repo_manager.py
     "git_token": "${GIT_TOKEN}",
     "source_branch": "main",
     "branch_exists_strategy": "checkout",
-    "show_command_output": true,
-    "command_scope": "repo",
-    "execute_clone": true,
-    "execute_branch": true,
-    "execute_replacements": true,
-    "execute_commands": true,
-    "execute_commit": true
+    "show_command_output": true
   }
 }
 ```
+
+---
+
+### execution - 执行步骤配置
+
+控制各个执行步骤是否启用。
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `clone` | boolean | true | 是否执行克隆/拉取步骤 |
+| `branch` | boolean | true | 是否执行分支创建步骤 |
+| `replacements` | boolean | true | 是否执行代码替换步骤 |
+| `commands` | boolean | true | 是否执行自定义命令步骤 |
+| `commit` | boolean | true | 是否执行提交/推送步骤 |
+
+**配置示例**:
+
+```json
+{
+  "execution": {
+    "clone": true,
+    "branch": true,
+    "replacements": true,
+    "commands": true,
+    "commit": true
+  }
+}
+```
+
+> **注意**: 旧配置格式（在 `global` 中使用 `execute_clone` 等）仍然支持，但推荐使用新的 `execution` 实体。
 
 ---
 
@@ -182,15 +207,63 @@ python batch_repo_manager.py
 
 ### commands - 自定义命令列表
 
-要在每个仓库中执行的 Shell 命令数组。
+要在仓库中执行的 Shell 命令数组。支持两种格式：
+
+#### 格式 1：字符串数组（旧格式，兼容）
+
+```json
+"commands": [
+  "npm install",
+  "npm run build"
+]
+```
+
+字符串格式的命令默认在每个仓库根目录执行（`scope="repo"`）。
+
+#### 格式 2：对象数组（新格式，推荐）
+
+```json
+"commands": [
+  {
+    "command": "npm install",
+    "scope": "repo"
+  },
+  {
+    "command": "docker-compose build",
+    "scope": "parent"
+  }
+]
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `command` | string | 是 | 要执行的 Shell 命令 |
+| `scope` | string | 否 | 执行范围：`"repo"`（每个仓库）或 `"parent"`/`"once"`（父目录一次） |
+
+**执行范围说明**:
+
+| scope 值 | 执行位置 | 执行时机 |
+|----------|----------|----------|
+| `repo` | 每个仓库根目录 | 每个仓库处理时执行 |
+| `parent` | 所有仓库的父目录 | 所有仓库处理完后执行一次 |
+| `once` | 等同于 `parent` | 所有仓库处理完后执行一次 |
 
 **示例**:
 
 ```json
 "commands": [
-  "npm install",
-  "npm run build",
-  "npm test"
+  {
+    "command": "npm install",
+    "scope": "repo"
+  },
+  {
+    "command": "npm run build",
+    "scope": "repo"
+  },
+  {
+    "command": "docker-compose up -d",
+    "scope": "parent"
+  }
 ]
 ```
 
@@ -263,9 +336,11 @@ python batch_repo_manager.py
 ```json
 {
   "global": {
-    "execute_commands": false,
-    "execute_commit": false,
     "show_command_output": true
+  },
+  "execution": {
+    "commands": false,
+    "commit": false
   },
   "repositories": [
     {"name": "project", "url": "https://github.com/user/project.git"}
@@ -285,14 +360,13 @@ python batch_repo_manager.py
 }
 ```
 
-### 场景 3: 在父目录执行命令
+### 场景 3: 混合命令执行（仓库级 + 父级）
 
 ```json
 {
-  "global": {
-    "command_scope": "parent",
-    "execute_replacements": false,
-    "execute_commit": false
+  "execution": {
+    "replacements": false,
+    "commit": false
   },
   "repositories": [
     {"name": "service-a", "url": "..."},
@@ -300,11 +374,29 @@ python batch_repo_manager.py
   ],
   "personal_branch": "main",
   "commands": [
-    "docker-compose build",
-    "docker-compose up -d"
+    {
+      "command": "npm install",
+      "scope": "repo"
+    },
+    {
+      "command": "npm test",
+      "scope": "repo"
+    },
+    {
+      "command": "docker-compose build",
+      "scope": "parent"
+    },
+    {
+      "command": "docker-compose up -d",
+      "scope": "parent"
+    }
   ]
 }
 ```
+
+说明：
+- `npm install` 和 `npm test` 会在每个仓库中执行
+- `docker-compose build` 和 `docker-compose up -d` 只在父目录执行一次
 
 ### 场景 4: 分支已存在时重新创建
 
@@ -324,9 +416,11 @@ python batch_repo_manager.py
 ```json
 {
   "global": {
-    "execute_replacements": false,
-    "execute_commit": false,
     "show_command_output": true
+  },
+  "execution": {
+    "replacements": false,
+    "commit": false
   },
   "repositories": [
     {"name": "project", "url": "..."}
@@ -343,9 +437,9 @@ python batch_repo_manager.py
 
 ```json
 {
-  "global": {
-    "execute_clone": false,
-    "execute_branch": false
+  "execution": {
+    "clone": false,
+    "branch": false
   },
   "repositories": [
     {"name": "local-project", "url": "..."}

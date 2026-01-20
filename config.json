@@ -6,13 +6,14 @@
     "git_token": "${GIT_TOKEN}",
     "source_branch": "main",
     "branch_exists_strategy": "checkout",
-    "show_command_output": true,
-    "command_scope": "repo",
-    "execute_clone": true,
-    "execute_branch": true,
-    "execute_replacements": true,
-    "execute_commands": true,
-    "execute_commit": true
+    "show_command_output": true
+  },
+  "execution": {
+    "clone": true,
+    "branch": true,
+    "replacements": true,
+    "commands": true,
+    "commit": true
   },
   "repositories": [
     {
@@ -41,7 +42,16 @@
       "exclude_patterns": ["*_test.py", "node_modules/*"]
     }
   ],
-  "commands": [],
+  "commands": [
+    {
+      "command": "echo 'Running in each repo'",
+      "scope": "repo"
+    },
+    {
+      "command": "echo 'Running once in parent directory'",
+      "scope": "parent"
+    }
+  ],
   "commit": {
     "message": "Batch update: {task_id}\n\n- Applied {replacement_count} replacement rules\n- Executed {command_count} build commands\n- Automated commit on {date}\n\nCo-Authored-By: Batch Tool <noreply@tool.com>",
     "variables": {

@@ -130,10 +130,32 @@ When a personal branch already exists locally or remotely:
 - Output is shown line-by-line with INFO/WARNING levels
 - Includes line count for easy review
 
-### 7. Command Execution Scope
-- `command_scope: "repo"`: Execute commands in each repository's root directory (default behavior)
-- `command_scope: "parent"`: Execute commands once in the parent directory containing all repositories
-- Useful for running commands that need to operate across multiple repos at once
+### 7. Command-Level Scope Configuration (NEW)
+Commands now support per-command `scope` configuration:
+
+**Old format (still supported)**:
+```json
+"commands": ["npm install", "npm run build"]
+```
+Default behavior: executes in each repository
+
+**New format (recommended)**:
+```json
+"commands": [
+  {"command": "npm install", "scope": "repo"},
+  {"command": "docker-compose build", "scope": "parent"}
+]
+```
+
+| scope | Behavior | Execution Timing |
+|-------|----------|------------------|
+| `repo` | Execute in each repository's root directory | During each repo processing |
+| `parent` | Execute once in parent directory | After all repos processed |
+| `once` | Same as `parent` | After all repos processed |
+
+**Execution flow**:
+1. Process all repositories (clone → branch → replacements → repo commands → commit)
+2. Execute parent-scope commands once
 
 ### 8. All subprocess.run UTF-8 Encoding
 All `subprocess.run()` calls now include `encoding='utf-8'` and `errors='replace'` parameters:
@@ -183,20 +205,23 @@ All `subprocess.run()` calls now include `encoding='utf-8'` and `errors='replace
 }
 ```
 
-### Scenario 3: Execute Commands in Parent Directory
+### Scenario 3: Mixed Command Execution (Repo + Parent Scope)
 ```json
 {
   "global": {
-    "command_scope": "parent",
     "execute_replacements": false,
     "execute_commit": false
   },
   "commands": [
-    "docker-compose build",
-    "docker-compose up -d"
+    {"command": "npm install", "scope": "repo"},
+    {"command": "npm test", "scope": "repo"},
+    {"command": "docker-compose build", "scope": "parent"},
+    {"command": "docker-compose up -d", "scope": "parent"}
   ]
 }
 ```
+
+Note: `npm install` and `npm test` execute in each repo; `docker-compose` commands execute once in parent directory.
 
 ### Scenario 4: Recreate Existing Branch
 ```json
@@ -212,9 +237,11 @@ All `subprocess.run()` calls now include `encoding='utf-8'` and `errors='replace
 ```json
 {
   "global": {
-    "execute_replacements": false,
-    "execute_commit": false,
     "show_command_output": true
+  },
+  "execution": {
+    "replacements": false,
+    "commit": false
   },
   "commands": [
     "python -m pytest tests/",
@@ -226,9 +253,9 @@ All `subprocess.run()` calls now include `encoding='utf-8'` and `errors='replace
 ### Scenario 6: Skip Clone Step (Local Code Already Exists)
 ```json
 {
-  "global": {
-    "execute_clone": false,
-    "execute_branch": false
+  "execution": {
+    "clone": false,
+    "branch": false
   },
   "personal_branch": "current-branch"
 }

@@ -921,50 +921,107 @@ class CodeModifier:
 class CommandExecutor:
     """命令执行器，在仓库目录中执行自定义命令"""
 
-    def __init__(self, on_error: str = "continue", show_output: bool = True,
-                 command_scope: str = "repo"):
+    def __init__(self, on_error: str = "continue", show_output: bool = True):
         """
         初始化命令执行器
 
         Args:
             on_error: 错误处理策略 ("continue" | "stop")
             show_output: 是否显示命令输出内容
-            command_scope: 命令执行范围
-                - "repo": 在每个仓库根目录执行
-                - "parent": 在所有仓库的父目录执行一次
         """
         self.on_error = on_error
         self.show_output = show_output
-        self.command_scope = command_scope
         self.logger = logging.getLogger(self.__class__.__name__)
 
-    def execute_in_repo(self, repo_dir: Path,
-                        commands: List[str],
-                        parent_dir: Optional[Path] = None) -> Tuple[int, int]:
+    def _normalize_commands(self, commands: List[Any]) -> List[Dict[str, str]]:
         """
-        执行命令列表
+        标准化命令配置格式，支持新旧两种格式
+
+        Args:
+            commands: 命令列表（可以是字符串或字典）
+
+        Returns:
+            标准化后的命令列表，每个元素为 {"command": str, "scope": str}
+        """
+        normalized = []
+        for cmd in commands:
+            if isinstance(cmd, str):
+                # 旧格式：字符串，默认为 repo 级别
+                normalized.append({"command": cmd, "scope": "repo"})
+            elif isinstance(cmd, dict):
+                # 新格式：对象
+                command = cmd.get("command", "")
+                scope = cmd.get("scope", "repo")
+                normalized.append({"command": command, "scope": scope})
+            else:
+                self.logger.warning(f"忽略无效的命令配置: {cmd}")
+        return normalized
+
+    def execute_repo_commands(self, repo_dir: Path,
+                             commands: List[Any]) -> Tuple[int, int]:
+        """
+        执行仓库级别的命令（scope="repo"）
 
         Args:
             repo_dir: 仓库目录
-            commands: 命令列表
-            parent_dir: 父目录（当 command_scope="parent" 时使用）
+            commands: 命令列表（支持新旧格式）
 
         Returns:
             (成功数量, 失败数量)
         """
+        normalized = self._normalize_commands(commands)
+        repo_commands = [cmd for cmd in normalized if cmd["scope"] == "repo"]
+
+        if not repo_commands:
+            return 0, 0
+
+        self.logger.info(f"在仓库目录执行 {len(repo_commands)} 条命令: {repo_dir}")
+
         success_count = 0
         fail_count = 0
 
-        # 根据配置选择执行目录
-        if self.command_scope == "parent" and parent_dir is not None:
-            exec_dir = parent_dir
-            self.logger.info(f"在父目录执行命令: {exec_dir}")
-        else:
-            exec_dir = repo_dir
-            self.logger.info(f"在仓库目录执行命令: {exec_dir}")
+        for cmd_config in repo_commands:
+            command = cmd_config["command"]
+            result = self.execute_single_command(repo_dir, command)
+            if result:
+                success_count += 1
+            else:
+                fail_count += 1
+                if self.on_error == "stop":
+                    self.logger.error(f"命令执行失败，中止后续命令")
+                    break
 
-        for cmd in commands:
-            result = self.execute_single_command(exec_dir, cmd)
+        return success_count, fail_count
+
+    def execute_parent_commands(self, parent_dir: Path,
+                                commands: List[Any]) -> Tuple[int, int]:
+        """
+        在父目录执行一次所有父级别命令（scope="parent" 或 "once"）
+
+        Args:
+            parent_dir: 父目录
+            commands: 命令列表（支持新旧格式）
+
+        Returns:
+            (成功数量, 失败数量)
+        """
+        normalized = self._normalize_commands(commands)
+        parent_commands = [
+            cmd for cmd in normalized
+            if cmd["scope"] in ("parent", "once")
+        ]
+
+        if not parent_commands:
+            return 0, 0
+
+        self.logger.info(f"在父目录执行 {len(parent_commands)} 条命令: {parent_dir}")
+
+        success_count = 0
+        fail_count = 0
+
+        for cmd_config in parent_commands:
+            command = cmd_config["command"]
+            result = self.execute_single_command(parent_dir, command)
             if result:
                 success_count += 1
             else:
@@ -1077,12 +1134,20 @@ class BatchRepoManager:
                         self.logger.error("仓库处理失败，中止后续处理")
                         break
 
-            # 4. 输出总结
+            # 4. 执行父级命令（在所有仓库处理完后）
+            commands = self.config.get('commands', [])
+            if commands and self._should_execute('commands'):
+                self.logger.info("=" * 60)
+                self.logger.info("执行父级命令")
+                self.logger.info("=" * 60)
+                self.command_executor.execute_parent_commands(self.work_dir, commands)
+
+            # 5. 输出总结
             self.logger.info("=" * 60)
             self.logger.info(f"批量处理完成: 成功 {success_count}, 失败 {fail_count}")
             self.logger.info("=" * 60)
 
-            # 5. 输出替换规则统计
+            # 6. 输出替换规则统计
             total_repos = len(self.config['repositories'])
             self.code_modifier.print_summary(total_repos)
 
@@ -1121,8 +1186,7 @@ class BatchRepoManager:
         # 初始化命令执行器
         on_error = global_config.get('on_error', 'continue')
         show_command_output = global_config.get('show_command_output', True)
-        command_scope = global_config.get('command_scope', 'repo')
-        self.command_executor = CommandExecutor(on_error, show_command_output, command_scope)
+        self.command_executor = CommandExecutor(on_error, show_command_output)
 
         # 初始化执行步骤配置
         self._init_execution_steps()
@@ -1132,15 +1196,41 @@ class BatchRepoManager:
 
     def _init_execution_steps(self):
         """初始化执行步骤配置"""
+        # 优先从独立的 execution 实体读取，保持向后兼容
+        execution_config = self.config.get('execution', {})
         global_config = self.config.get('global', {})
+
         # 默认所有步骤都执行
         self.execution_steps = {
-            'clone': global_config.get('execute_clone', True),
-            'branch': global_config.get('execute_branch', True),
-            'replacements': global_config.get('execute_replacements', True),
-            'commands': global_config.get('execute_commands', True),
-            'commit': global_config.get('execute_commit', True),
+            'clone': self._get_execution_flag(execution_config, global_config, 'clone', 'execute_clone'),
+            'branch': self._get_execution_flag(execution_config, global_config, 'branch', 'execute_branch'),
+            'replacements': self._get_execution_flag(execution_config, global_config, 'replacements', 'execute_replacements'),
+            'commands': self._get_execution_flag(execution_config, global_config, 'commands', 'execute_commands'),
+            'commit': self._get_execution_flag(execution_config, global_config, 'commit', 'execute_commit'),
         }
+
+    def _get_execution_flag(self, execution_config: Dict, global_config: Dict,
+                           new_key: str, old_key: str) -> bool:
+        """
+        获取执行步骤标志，支持新旧两种配置格式
+
+        Args:
+            execution_config: execution 实体配置
+            global_config: global 实体配置
+            new_key: 新格式的键名 (如 'clone')
+            old_key: 旧格式的键名 (如 'execute_clone')
+
+        Returns:
+            是否执行该步骤
+        """
+        # 优先从 execution 实体读取（新格式）
+        if new_key in execution_config:
+            return execution_config[new_key]
+        # 其次从 global 实体读取（旧格式，向后兼容）
+        if old_key in global_config:
+            return global_config[old_key]
+        # 默认执行
+        return True
 
     def _should_execute(self, step: str) -> bool:
         """
@@ -1204,12 +1294,12 @@ class BatchRepoManager:
             elif replacements:
                 self.logger.info(f"跳过代码替换步骤")
 
-            # 4. 执行自定义命令
+            # 4. 执行仓库级别的自定义命令（scope="repo"）
             commands = self.config.get('commands', [])
             if commands and self._should_execute('commands'):
-                self.logger.info(f"执行 {len(commands)} 条命令...")
-                # 传递父目录参数，支持在父目录执行命令
-                self.command_executor.execute_in_repo(repo_dir, commands, self.work_dir)
+                success, fail = self.command_executor.execute_repo_commands(repo_dir, commands)
+                if success + fail == 0:
+                    self.logger.info(f"没有需要在此仓库执行的命令")
             elif commands:
                 self.logger.info(f"跳过命令执行步骤")
 
