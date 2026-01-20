@@ -151,7 +151,6 @@ Default behavior: executes in each repository
 |-------|----------|------------------|
 | `repo` | Execute in each repository's root directory | During each repo processing |
 | `parent` | Execute once in parent directory | After all repos processed |
-| `once` | Same as `parent` | After all repos processed |
 
 **Execution flow**:
 1. Process all repositories (clone → branch → replacements → repo commands → commit)

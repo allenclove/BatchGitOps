@@ -996,7 +996,7 @@ class CommandExecutor:
     def execute_parent_commands(self, parent_dir: Path,
                                 commands: List[Any]) -> Tuple[int, int]:
         """
-        在父目录执行一次所有父级别命令（scope="parent" 或 "once"）
+        在父目录执行一次所有父级别命令（scope="parent"）
 
         Args:
             parent_dir: 父目录
@@ -1008,7 +1008,7 @@ class CommandExecutor:
         normalized = self._normalize_commands(commands)
         parent_commands = [
             cmd for cmd in normalized
-            if cmd["scope"] in ("parent", "once")
+            if cmd["scope"] == "parent"
         ]
 
         if not parent_commands:

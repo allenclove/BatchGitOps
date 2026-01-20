@@ -238,7 +238,7 @@ python batch_repo_manager.py
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `command` | string | 是 | 要执行的 Shell 命令 |
-| `scope` | string | 否 | 执行范围：`"repo"`（每个仓库）或 `"parent"`/`"once"`（父目录一次） |
+| `scope` | string | 否 | 执行范围：`"repo"`（每个仓库）或 `"parent"`（父目录一次），默认 `"repo"` |
 
 **执行范围说明**:
 
@@ -246,7 +246,6 @@ python batch_repo_manager.py
 |----------|----------|----------|
 | `repo` | 每个仓库根目录 | 每个仓库处理时执行 |
 | `parent` | 所有仓库的父目录 | 所有仓库处理完后执行一次 |
-| `once` | 等同于 `parent` | 所有仓库处理完后执行一次 |
 
 **示例**:
 
