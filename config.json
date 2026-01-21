@@ -4,6 +4,7 @@
     "log_dir": "./logs",
     "log_level": "INFO",
     "git_token": "${GIT_TOKEN}",
+    "git_account": "${GIT_ACCOUNT}",
     "source_branch": "main",
     "branch_exists_strategy": "checkout",
     "show_command_output": true

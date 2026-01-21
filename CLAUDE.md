@@ -98,39 +98,33 @@ The `exclude_patterns` in replacement rules uses `fnmatch` for wildcard matching
 ### 1. UTF-8 Command Execution
 All shell commands now execute with UTF-8 encoding and error replacement for compatibility.
 
-### 2. Colored Console Logging
-The console output now uses ANSI colors to distinguish log levels:
-- DEBUG: Cyan
-- INFO: Green
-- WARNING: Yellow
-- ERROR: Red
-- CRITICAL: Magenta
-Colors are automatically disabled when stdout is not a TTY (e.g., when redirected to a file).
-
-### 3. Replacement Rule Statistics
+### 2. Replacement Rule Statistics (Enhanced)
 The `CodeModifier` now tracks and reports:
-- Number of repositories affected by each rule
-- Number of files modified by each rule
-- Per-repository modification counts
+- Number of repositories with actual modifications (excluding zero-match)
+- Number of zero-match repositories for each rule
+- Total replacement count (not just file count)
+- Per-repository replacement counts
 - Summary statistics after processing all repositories
+- Warning for rules that matched nothing across all repos
 
-### 4. Step Execution Control
-You can now selectively disable execution steps:
-- Set `execute_clone`, `execute_branch`, `execute_replacements`, `execute_commands`, or `execute_commit` to `false` to skip those steps
+### 3. Step Execution Control
+You can now selectively disable execution steps using the `execution` config entity:
+- Set `clone`, `branch`, `replacements`, `commands`, or `commit` to `false` to skip those steps
 - Useful for testing or running partial workflows
+- Old format (in `global`) is still supported for backward compatibility
 
-### 5. Branch Existence Handling
+### 4. Branch Existence Handling
 When a personal branch already exists locally or remotely:
 - `checkout`: Checkout the existing branch (default)
 - `recreate`: Delete and recreate from source branch
 - `reset`: Reset existing branch to source branch
 
-### 6. Command Output Visibility
+### 5. Command Output Visibility
 - `show_command_output` controls whether command stdout/stderr is displayed
 - Output is shown line-by-line with INFO/WARNING levels
 - Includes line count for easy review
 
-### 7. Command-Level Scope Configuration (NEW)
+### 6. Command-Level Scope Configuration
 Commands now support per-command `scope` configuration:
 
 **Old format (still supported)**:
@@ -155,6 +149,11 @@ Default behavior: executes in each repository
 **Execution flow**:
 1. Process all repositories (clone → branch → replacements → repo commands → commit)
 2. Execute parent-scope commands once
+
+### 7. Git Account Configuration
+Added `git_account` global config for Git token authentication:
+- When configured: `https://account:token@github.com/...`
+- When not configured: `https://token@github.com/...`
 
 ### 8. All subprocess.run UTF-8 Encoding
 All `subprocess.run()` calls now include `encoding='utf-8'` and `errors='replace'` parameters:
@@ -268,11 +267,25 @@ Note: `npm install` and `npm test` execute in each repo; `docker-compose` comman
 替换规则执行统计汇总
 ============================================================
 规则 #1:
-  - 涉及代码仓: 5/5
-  - 修改文件数: 23
+  - 成功修改仓库: 3 个
+  - 零匹配仓库: 2 个
+  - 修改文件数: 15
+  - 替换总次数: 42
 规则 #2:
-  - 涉及代码仓: 3/5
-  - 修改文件数: 7
+  - 成功修改仓库: 5 个
+  - 修改文件数: 23
+  - 替换总次数: 87
+------------------------------------------------------------
+总计: 修改 38 个文件，共 129 处替换
+============================================================
+```
+
+### Anomaly Detection
+If a rule matched nothing across all repositories:
+```
+============================================================
+警告: 以下规则在所有仓库中均未匹配到内容: [3]
+请检查搜索字符串是否正确，或排除模式是否过于严格
 ============================================================
 ```
 

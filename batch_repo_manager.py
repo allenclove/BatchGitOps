@@ -9,48 +9,12 @@ import os
 import re
 import subprocess
 import fnmatch
-import sys
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 
 import json
 from dotenv import load_dotenv
-
-
-# ============================================================================
-# 彩色日志处理器
-# ============================================================================
-
-class ColorFormatter(logging.Formatter):
-    """带颜色输出的日志格式化器（仅用于控制台）"""
-
-    # ANSI颜色代码
-    COLORS = {
-        'DEBUG': '\033[36m',      # 青色
-        'INFO': '\033[32m',       # 绿色
-        'WARNING': '\033[33m',    # 黄色
-        'ERROR': '\033[31m',      # 红色
-        'CRITICAL': '\033[35m',   # 紫色
-    }
-    RESET = '\033[0m'
-
-    def __init__(self, fmt=None, datefmt=None, use_colors=True):
-        """初始化彩色格式化器"""
-        super().__init__(fmt, datefmt)
-        self.use_colors = use_colors
-
-    def format(self, record):
-        """格式化日志记录"""
-        if self.use_colors:
-            # 获取日志级别对应的颜色
-            color = self.COLORS.get(record.levelname, '')
-            if color:
-                # 添加颜色到级别名称
-                record.levelname = f"{color}{record.levelname}{self.RESET}"
-                # 也可以为整行添加颜色
-                record.msg = f"{color}{record.msg}{self.RESET}"
-        return super().format(record)
 
 
 # ============================================================================
@@ -88,23 +52,19 @@ class LogManager:
         # 清除现有的处理器
         root_logger.handlers.clear()
 
-        # 文件处理器（不带颜色）
-        file_formatter = logging.Formatter(
+        # 统一的日志格式
+        formatter = logging.Formatter(
             '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
         )
+
+        # 文件处理器
         file_handler = logging.FileHandler(log_file, encoding='utf-8')
-        file_handler.setFormatter(file_formatter)
+        file_handler.setFormatter(formatter)
         root_logger.addHandler(file_handler)
 
-        # 控制台处理器（带颜色）
+        # 控制台处理器
         console_handler = logging.StreamHandler()
-        # 检测是否支持颜色
-        use_colors = hasattr(sys.stdout, 'isatty') and sys.stdout.isatty()
-        console_formatter = ColorFormatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            use_colors=use_colors
-        )
-        console_handler.setFormatter(console_formatter)
+        console_handler.setFormatter(formatter)
         root_logger.addHandler(console_handler)
 
     def get_logger(self, name: str) -> logging.Logger:
@@ -219,18 +179,21 @@ class GitOperations:
     """Git操作封装类，处理所有Git相关操作"""
 
     def __init__(self, git_token: Optional[str] = None,
+                 git_account: Optional[str] = None,
                  branch_exists_strategy: str = "checkout"):
         """
         初始化Git操作器
 
         Args:
             git_token: HTTPS访问的Git token（可选）
+            git_account: Git账号，用于token认证（可选）
             branch_exists_strategy: 分支已存在时的处理策略
                 - "checkout": 直接检出远程已存在的分支
                 - "recreate": 删除本地分支并重新创建
                 - "reset": 检出分支并重置到源分支
         """
         self.git_token = git_token
+        self.git_account = git_account
         self.branch_exists_strategy = branch_exists_strategy
         self.logger = logging.getLogger(self.__class__.__name__)
 
@@ -655,10 +618,14 @@ class GitOperations:
             return url
 
         # 解析URL并插入token
-        # https://github.com/user/repo.git -> https://token@github.com/user/repo.git
+        # https://github.com/user/repo.git -> https://account:token@github.com/user/repo.git
+        # 如果没有配置 account，则 -> https://token@github.com/user/repo.git
         parts = url.split('://')
         if len(parts) == 2:
-            return f"{parts[0]}://{self.git_token}@{parts[1]}"
+            if self.git_account:
+                return f"{parts[0]}://{self.git_account}:{self.git_token}@{parts[1]}"
+            else:
+                return f"{parts[0]}://{self.git_token}@{parts[1]}"
         return url
 
     def _inject_token_to_url_url_if_needed(self, repo_dir: Path,
@@ -708,8 +675,17 @@ class CodeModifier:
     def __init__(self):
         """初始化代码修改器"""
         self.logger = logging.getLogger(self.__class__.__name__)
-        # 统计信息
-        self.rule_stats = {}  # {rule_index: {'repos': set(), 'files': []}}
+        # 统计信息结构：
+        # {
+        #   rule_index: {
+        #     'modified_repos': set(),      # 有修改的仓库
+        #     'zero_match_repos': set(),    # 零匹配的仓库
+        #     'files': [],                   # 修改的文件列表
+        #     'replacement_counts': {},      # {repo_name: 替换次数}
+        #     'total_replacements': 0        # 总替换次数
+        #   }
+        # }
+        self.rule_stats = {}
 
     def apply_replacements(self, repo_dir: Path,
                            replacements: List[Dict[str, Any]],
@@ -739,40 +715,46 @@ class CodeModifier:
 
             # 初始化规则统计
             if idx not in self.rule_stats:
-                self.rule_stats[idx] = {'repos': set(), 'files': []}
+                self.rule_stats[idx] = {
+                    'modified_repos': set(),
+                    'zero_match_repos': set(),
+                    'files': [],
+                    'replacement_counts': {},
+                    'total_replacements': 0
+                }
 
             self.logger.info(f"应用替换规则 #{idx + 1}: {'(正则)' if is_regex else ''} {search[:50]}...")
 
             # 遍历所有文件
             files_to_process = self._get_files_to_process(repo_dir, include_exts, exclude_patterns)
             file_modified_count = 0
+            repo_replacement_count = 0
 
             for file_path in files_to_process:
-                if self._apply_single_replacement(
-                    file_path, search, replace, is_regex
-                ):
+                result = self._apply_single_replacement(file_path, search, replace, is_regex)
+                if result and result['modified']:
                     modified_count += 1
                     file_modified_count += 1
+                    repo_replacement_count += result['count']
                     self.rule_stats[idx]['files'].append(str(file_path))
 
-            # 记录该仓库被此规则处理过（即使没有修改文件）
-            self.rule_stats[idx]['repos'].add(repo_name)
-
+            # 记录统计信息
             if file_modified_count > 0:
-                self.logger.info(f"  -> 规则 #{idx + 1} 在 [{repo_name}] 中修改了 {file_modified_count} 个文件")
+                self.rule_stats[idx]['modified_repos'].add(repo_name)
+                self.rule_stats[idx]['replacement_counts'][repo_name] = repo_replacement_count
+                self.rule_stats[idx]['total_replacements'] += repo_replacement_count
+                self.logger.info(f"  -> 规则 #{idx + 1} 在 [{repo_name}] 中修改了 {file_modified_count} 个文件，共 {repo_replacement_count} 处替换")
             else:
+                self.rule_stats[idx]['zero_match_repos'].add(repo_name)
                 self.logger.info(f"  -> 规则 #{idx + 1} 在 [{repo_name}] 中未匹配到任何内容")
 
         if modified_count > 0:
             self.logger.info(f"仓库 [{repo_name}] 共修改 {modified_count} 个文件")
         return modified_count
 
-    def print_summary(self, repo_count: int):
+    def print_summary(self):
         """
         打印所有替换规则的统计摘要
-
-        Args:
-            repo_count: 处理的仓库总数
         """
         if not self.rule_stats:
             self.logger.info("未执行任何替换规则")
@@ -782,12 +764,40 @@ class CodeModifier:
         self.logger.info("替换规则执行统计汇总")
         self.logger.info("=" * 60)
 
+        # 汇总统计
+        total_modified_files = 0
+        total_replacements = 0
+        zero_match_rules = []
+
         for idx, stats in self.rule_stats.items():
-            affected_repos = len(stats['repos'])
+            modified_repos = len(stats['modified_repos'])
+            zero_match_repos = len(stats['zero_match_repos'])
             affected_files = len(stats['files'])
+            replacements = stats['total_replacements']
+
+            total_modified_files += affected_files
+            total_replacements += replacements
+
             self.logger.info(f"规则 #{idx + 1}:")
-            self.logger.info(f"  - 涉及代码仓: {affected_repos}/{repo_count}")
+            self.logger.info(f"  - 成功修改仓库: {modified_repos} 个")
+            if zero_match_repos > 0:
+                self.logger.info(f"  - 零匹配仓库: {zero_match_repos} 个")
             self.logger.info(f"  - 修改文件数: {affected_files}")
+            self.logger.info(f"  - 替换总次数: {replacements}")
+
+            # 检测异常：零匹配规则
+            if modified_repos == 0:
+                zero_match_rules.append(idx + 1)
+
+        # 总体统计
+        self.logger.info("-" * 60)
+        self.logger.info(f"总计: 修改 {total_modified_files} 个文件，共 {total_replacements} 处替换")
+
+        # 异常检测
+        if zero_match_rules:
+            self.logger.warning("=" * 60)
+            self.logger.warning(f"警告: 以下规则在所有仓库中均未匹配到内容: {zero_match_rules}")
+            self.logger.warning("请检查搜索字符串是否正确，或排除模式是否过于严格")
 
         self.logger.info("=" * 60)
 
@@ -852,7 +862,7 @@ class CodeModifier:
         return True
 
     def _apply_single_replacement(self, file_path: Path, search: str,
-                                   replace: str, is_regex: bool) -> bool:
+                                   replace: str, is_regex: bool) -> Optional[Dict[str, Any]]:
         """
         对单个文件应用替换规则
 
@@ -863,7 +873,7 @@ class CodeModifier:
             is_regex: 是否使用正则表达式
 
         Returns:
-            文件是否被修改
+            None 表示处理失败或无替换，否则返回 {'modified': True, 'count': 替换次数}
         """
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
@@ -881,12 +891,12 @@ class CodeModifier:
                 with open(file_path, 'w', encoding='utf-8') as f:
                     f.write(new_content)
                 self.logger.debug(f"修改文件: {file_path} ({count} 处替换)")
-                return True
+                return {'modified': True, 'count': count}
 
-            return False
+            return None
         except Exception as e:
             self.logger.warning(f"处理文件失败 {file_path}: {e}")
-            return False
+            return None
 
     def _matches_exclude_pattern(self, file_path: Path,
                                   exclude_patterns: List[str]) -> bool:
@@ -1148,8 +1158,7 @@ class BatchRepoManager:
             self.logger.info("=" * 60)
 
             # 6. 输出替换规则统计
-            total_repos = len(self.config['repositories'])
-            self.code_modifier.print_summary(total_repos)
+            self.code_modifier.print_summary()
 
         except Exception as e:
             self.logger.error(f"程序执行失败: {e}", exc_info=True)
@@ -1177,8 +1186,9 @@ class BatchRepoManager:
 
         # 初始化Git操作器
         git_token = global_config.get('git_token')
+        git_account = global_config.get('git_account')
         branch_exists_strategy = global_config.get('branch_exists_strategy', 'checkout')
-        self.git_ops = GitOperations(git_token, branch_exists_strategy)
+        self.git_ops = GitOperations(git_token, git_account, branch_exists_strategy)
 
         # 初始化代码修改器
         self.code_modifier = CodeModifier()

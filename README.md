@@ -80,6 +80,7 @@ python batch_repo_manager.py
 | `log_dir` | string | "./logs" | 日志文件目录 |
 | `log_level` | string | "INFO" | 日志级别：<br>- `"DEBUG"`: 详细调试信息<br>- `"INFO"`: 一般信息<br>- `"WARNING"`: 警告信息<br>- `"ERROR"`: 错误信息<br>- `"CRITICAL"`: 严重错误 |
 | `git_token` | string | - | Git 访问令牌，支持环境变量引用如 `${GIT_TOKEN}` |
+| `git_account` | string | - | Git 账号，用于 token 认证。配置后将生成格式：`https://account:token@github.com/...`，未配置则生成：`https://token@github.com/...` |
 | `source_branch` | string | "main" | 源分支名称，用于克隆和创建个人分支 |
 | `branch_exists_strategy` | string | "checkout" | 个人分支已存在时的处理策略：<br>- `"checkout"`: 直接检出远程已存在的分支<br>- `"recreate"`: 删除本地分支并重新创建<br>- `"reset"`: 检出分支并重置到源分支 |
 | `show_command_output` | boolean | true | 是否显示命令执行的输出内容 |
@@ -93,6 +94,7 @@ python batch_repo_manager.py
     "log_dir": "./logs",
     "log_level": "INFO",
     "git_token": "${GIT_TOKEN}",
+    "git_account": "${GIT_ACCOUNT}",
     "source_branch": "main",
     "branch_exists_strategy": "checkout",
     "show_command_output": true
@@ -452,16 +454,7 @@ python batch_repo_manager.py
 
 ## 日志输出
 
-工具会产生两种日志：
-
-1. **控制台输出** (带颜色):
-   - DEBUG: 青色
-   - INFO: 绿色
-   - WARNING: 黄色
-   - ERROR: 红色
-   - CRITICAL: 紫色
-
-2. **日志文件**: `logs/batchgitops_YYYYMMDD_HHMMSS.log`
+工具会产生日志文件：`logs/batchgitops_YYYYMMDD_HHMMSS.log`
 
 ### 替换规则统计示例
 
@@ -470,11 +463,27 @@ python batch_repo_manager.py
 替换规则执行统计汇总
 ============================================================
 规则 #1:
-  - 涉及代码仓: 5/5
-  - 修改文件数: 23
+  - 成功修改仓库: 3 个
+  - 零匹配仓库: 2 个
+  - 修改文件数: 15
+  - 替换总次数: 42
 规则 #2:
-  - 涉及代码仓: 3/5
-  - 修改文件数: 7
+  - 成功修改仓库: 5 个
+  - 修改文件数: 23
+  - 替换总次数: 87
+------------------------------------------------------------
+总计: 修改 38 个文件，共 129 处替换
+============================================================
+```
+
+### 异常检测
+
+如果某个替换规则在所有仓库中都未匹配到内容，工具会输出警告：
+
+```
+============================================================
+警告: 以下规则在所有仓库中均未匹配到内容: [3]
+请检查搜索字符串是否正确，或排除模式是否过于严格
 ============================================================
 ```
 
@@ -487,7 +496,8 @@ python batch_repo_manager.py
 ```json
 {
   "global": {
-    "git_token": "${GIT_TOKEN}"
+    "git_token": "${GIT_TOKEN}",
+    "git_account": "${GIT_ACCOUNT}"
   }
 }
 ```
@@ -496,6 +506,7 @@ python batch_repo_manager.py
 
 ```bash
 GIT_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxx
+GIT_ACCOUNT=your-username
 ```
 
 ---
