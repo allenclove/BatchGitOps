@@ -1097,6 +1097,82 @@ class CommandExecutor:
 
 
 # ============================================================================
+# 执行统计模块
+# ============================================================================
+
+class ExecutionStats:
+    """执行统计器，追踪和展示各节点的执行情况"""
+
+    def __init__(self, steps: Dict[str, bool]):
+        """
+        初始化执行统计器
+
+        Args:
+            steps: 执行步骤配置 {step_name: enabled}
+        """
+        self.steps = steps
+        self.stats = {
+            'clone': {'enabled': steps.get('clone', True), 'executed': 0, 'skipped': 0, 'success': 0, 'failed': 0},
+            'branch': {'enabled': steps.get('branch', True), 'executed': 0, 'skipped': 0, 'success': 0, 'failed': 0},
+            'replacements': {'enabled': steps.get('replacements', True), 'executed': 0, 'skipped': 0, 'success': 0, 'failed': 0},
+            'commands': {'enabled': steps.get('commands', True), 'executed': 0, 'skipped': 0, 'success': 0, 'failed': 0},
+            'commit': {'enabled': steps.get('commit', True), 'executed': 0, 'skipped': 0, 'success': 0, 'failed': 0},
+        }
+        self.logger = logging.getLogger(self.__class__.__name__)
+
+    def record_skip(self, step: str):
+        """记录跳过的步骤"""
+        if step in self.stats:
+            self.stats[step]['skipped'] += 1
+
+    def record_execute(self, step: str, success: bool):
+        """记录执行的步骤"""
+        if step in self.stats:
+            self.stats[step]['executed'] += 1
+            if success:
+                self.stats[step]['success'] += 1
+            else:
+                self.stats[step]['failed'] += 1
+
+    def print_summary(self):
+        """打印执行统计摘要"""
+        self.logger.info("")
+        self.logger.info("=" * 60)
+        self.logger.info("执行节点统计汇总")
+        self.logger.info("=" * 60)
+
+        # 定义步骤显示名称和图标
+        step_names = {
+            'clone': ('克隆/拉取', '📥'),
+            'branch': ('创建分支', '🌿'),
+            'replacements': ('代码替换', '✏️'),
+            'commands': ('执行命令', '⚙️'),
+            'commit': ('提交推送', '📤'),
+        }
+
+        for step_key, step_data in self.stats.items():
+            name, icon = step_names.get(step_key, (step_key, '•'))
+            enabled = step_data['enabled']
+            executed = step_data['executed']
+            skipped = step_data['skipped']
+            success = step_data['success']
+            failed = step_data['failed']
+
+            if not enabled:
+                status = "❌ 已禁用"
+            elif executed == 0 and skipped == 0:
+                status = "⏭️ 未执行"
+            elif failed == 0:
+                status = f"✅ 成功 ({executed}/{executed + skipped})"
+            else:
+                status = f"⚠️ 部分失败 (成功: {success}, 失败: {failed})"
+
+            self.logger.info(f"{icon} {name:12s} {status}")
+
+        self.logger.info("=" * 60)
+
+
+# ============================================================================
 # 主程序流程
 # ============================================================================
 
@@ -1118,6 +1194,7 @@ class BatchRepoManager:
         self.git_ops: GitOperations = None
         self.code_modifier: CodeModifier = None
         self.command_executor: CommandExecutor = None
+        self.execution_stats: ExecutionStats = None
 
         # 工作目录
         self.work_dir = self.config_path.parent / "repos"
@@ -1131,7 +1208,10 @@ class BatchRepoManager:
             # 2. 初始化组件
             self._init_components()
 
-            # 3. 处理所有仓库
+            # 3. 初始化执行统计
+            self.execution_stats = ExecutionStats(self.execution_steps)
+
+            # 4. 处理所有仓库
             success_count = 0
             fail_count = 0
 
@@ -1144,7 +1224,7 @@ class BatchRepoManager:
                         self.logger.error("仓库处理失败，中止后续处理")
                         break
 
-            # 4. 执行父级命令（在所有仓库处理完后）
+            # 5. 执行父级命令（在所有仓库处理完后）
             commands = self.config.get('commands', [])
             if commands and self._should_execute('commands'):
                 self.logger.info("=" * 60)
@@ -1152,12 +1232,15 @@ class BatchRepoManager:
                 self.logger.info("=" * 60)
                 self.command_executor.execute_parent_commands(self.work_dir, commands)
 
-            # 5. 输出总结
+            # 6. 输出总结
             self.logger.info("=" * 60)
             self.logger.info(f"批量处理完成: 成功 {success_count}, 失败 {fail_count}")
             self.logger.info("=" * 60)
 
-            # 6. 输出替换规则统计
+            # 7. 输出执行节点统计
+            self.execution_stats.print_summary()
+
+            # 8. 输出替换规则统计
             self.code_modifier.print_summary()
 
         except Exception as e:
@@ -1276,10 +1359,13 @@ class BatchRepoManager:
             # 1. 克隆或拉取代码
             repo_dir = self.work_dir / name
             if self._should_execute('clone'):
-                if not self.git_ops.clone_or_pull(url, repo_dir, source_branch):
+                result = self.git_ops.clone_or_pull(url, repo_dir, source_branch)
+                self.execution_stats.record_execute('clone', result)
+                if not result:
                     self.logger.error(f"克隆/拉取失败: {name}")
                     return False
             else:
+                self.execution_stats.record_skip('clone')
                 self.logger.info(f"跳过克隆/拉取步骤: {name}")
                 if not repo_dir.exists():
                     self.logger.error(f"仓库目录不存在且跳过克隆: {name}")
@@ -1288,12 +1374,15 @@ class BatchRepoManager:
             # 2. 创建个人分支
             personal_branch = self.config.get('personal_branch', 'feature/batch-update')
             if self._should_execute('branch'):
-                if not self.git_ops.create_personal_branch(
+                result = self.git_ops.create_personal_branch(
                     repo_dir, source_branch, personal_branch
-                ):
+                )
+                self.execution_stats.record_execute('branch', result)
+                if not result:
                     self.logger.error(f"创建分支失败: {name}")
                     return False
             else:
+                self.execution_stats.record_skip('branch')
                 self.logger.info(f"跳过创建分支步骤: {name}")
 
             # 3. 批量修改代码
@@ -1301,16 +1390,25 @@ class BatchRepoManager:
             if replacements and self._should_execute('replacements'):
                 self.logger.info(f"应用 {len(replacements)} 条替换规则...")
                 self.code_modifier.apply_replacements(repo_dir, replacements, name)
+                self.execution_stats.record_execute('replacements', True)
             elif replacements:
+                self.execution_stats.record_skip('replacements')
                 self.logger.info(f"跳过代码替换步骤")
+            else:
+                # 没有替换规则时也算跳过
+                if not replacements:
+                    self.execution_stats.record_skip('replacements')
 
             # 4. 执行仓库级别的自定义命令（scope="repo"）
             commands = self.config.get('commands', [])
             if commands and self._should_execute('commands'):
                 success, fail = self.command_executor.execute_repo_commands(repo_dir, commands)
+                if success + fail > 0:
+                    self.execution_stats.record_execute('commands', fail == 0)
                 if success + fail == 0:
                     self.logger.info(f"没有需要在此仓库执行的命令")
             elif commands:
+                self.execution_stats.record_skip('commands')
                 self.logger.info(f"跳过命令执行步骤")
 
             # 5. 提交并推送
@@ -1319,12 +1417,15 @@ class BatchRepoManager:
                     self.config['commit']['message'],
                     name
                 )
-                if not self.git_ops.commit_and_push(
+                result = self.git_ops.commit_and_push(
                     repo_dir, personal_branch, commit_message
-                ):
+                )
+                # commit 失败不记录为失败（因为前面的操作已经成功）
+                self.execution_stats.record_execute('commit', True)
+                if not result:
                     self.logger.warning(f"提交/推送失败: {name}")
-                    # 不返回False，因为前面的操作已经成功
             else:
+                self.execution_stats.record_skip('commit')
                 self.logger.info(f"跳过提交/推送步骤")
 
             self.logger.info(f"仓库处理完成: {name}")
